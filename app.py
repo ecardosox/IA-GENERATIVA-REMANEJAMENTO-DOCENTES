@@ -35,10 +35,8 @@ api_key = pegar_configuracao("GROQ_API_KEY")
 MODEL_NAME = "llama-3.3-70b-versatile"
 
 # URL de Conexão Segura (Lida do cofre do Streamlit ou do .env)
-database_url_env = pegar_configuracao(
-    "DATABASE_URL", 
-    "postgresql://postgres:sua_senha_aqui@localhost:5432/postgres"
-)
+# Lendo a URL de conexão de forma segura
+database_url_env = st.secrets.get("DATABASE_URL", os.getenv("DATABASE_URL", "postgresql://postgres:senha@localhost:5432/postgres"))
 
 def init_database(db_uri):
     return create_engine(db_uri)
