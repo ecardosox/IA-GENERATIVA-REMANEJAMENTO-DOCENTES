@@ -7,6 +7,7 @@ import unicodedata
 from datetime import datetime 
 from zoneinfo import ZoneInfo 
 from sqlalchemy import create_engine, text 
+import psycopg2
 
 load_dotenv()
 
@@ -34,19 +35,8 @@ def pegar_configuracao(chave, valor_padrao=None):
 api_key = pegar_configuracao("GROQ_API_KEY")
 MODEL_NAME = "llama-3.3-70b-versatile"
 
-# URL de Conexão Segura (Lida do cofre do Streamlit ou do .env)
-import psycopg2
-from dotenv import load_dotenv
-import os
-
-# Load environment variables from .env
-load_dotenv()
-
-# Fetch variables
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-# Connect to the database
-connection = psycopg2.connect(DATABASE_URL)
+# URL de Conexão Segura
+DATABASE_URL = os.getenv("DATABASE_URL") or pegar_configuracao("DATABASE_URL")
 
 def init_database(db_uri):
     return create_engine(db_uri)
@@ -60,6 +50,8 @@ def testar_conexao(engine):
 # ==========================================
 if "engine" not in st.session_state:
     try:
+        if not DATABASE_URL:
+            raise ValueError("DATABASE_URL não configurada nas variáveis de ambiente ou secrets.")
         engine_padrao = init_database(DATABASE_URL)
         testar_conexao(engine_padrao)
         st.session_state.engine = engine_padrao
@@ -111,6 +103,17 @@ def buscar_professores(engine):
     sql = "SELECT id_professor, nome_professor FROM professores ORDER BY nome_professor"
     with engine.connect() as connection:
         return connection.execute(text(sql)).mappings().all()
+
+def buscar_professores_por_disciplina(engine, id_disciplina):
+    sql = """
+        SELECT DISTINCT p.id_professor, p.nome_professor
+        FROM grade_aulas ga
+        INNER JOIN professores p ON ga.id_professor = p.id_professor
+        WHERE ga.id_disciplina = :id_disciplina
+        ORDER BY p.nome_professor
+    """
+    with engine.connect() as connection:
+        return connection.execute(text(sql), {"id_disciplina": id_disciplina}).mappings().all()
 
 def buscar_professores_disponiveis(engine, id_horario, id_professor_original=None):
     sql = """
@@ -364,8 +367,9 @@ def chamar_ia_generativa(pergunta_usuario_mascarada, contexto_banco_mascarado):
 
 def get_response(pergunta, engine):
     texto_norm = normalizar_texto(pergunta)
+    
+    # Intenção 1: Ausência / Substituição / Remanejamento
     if any(k in texto_norm for k in ["falta", "faltou", "ausente", "substituir", "remanejamento", "substituto"]):
-        
         resultado_banco = processar_ausencia(pergunta, engine)
         
         pergunta_mascarada, mapa_pergunta = aplicar_data_masking(pergunta, engine)
@@ -374,11 +378,25 @@ def get_response(pergunta, engine):
         mapa_completo = {**mapa_pergunta, **mapa_resultado}
         
         resposta_ia_mascarada = chamar_ia_generativa(pergunta_mascarada, resultado_mascarado)
+        return remover_data_masking(resposta_ia_mascarada, mapa_completo)
+
+    # Intenção 2: Listar professores de uma disciplina específica
+    elif "professor" in texto_norm or "professores" in texto_norm:
+        disciplinas = buscar_disciplinas(engine)
+        disciplina = identificar_disciplina(pergunta, disciplinas)
         
-        resposta_final = remover_data_masking(resposta_ia_mascarada, mapa_completo)
+        if not disciplina:
+            return "⚠️ Não consegui identificar a **disciplina** na sua pergunta para listar os professores."
+            
+        professores = buscar_professores_por_disciplina(engine, disciplina["id_disciplina"])
         
-        return resposta_final
-    return "Olá! Posso ajudar a verificar ausências e sugerir substitutos."
+        if not professores:
+            return f"📚 Não encontrei professores cadastrados lecionando **{disciplina['nome_disciplina']}** na grade atual."
+            
+        nomes = [p["nome_professor"] for p in professores]
+        return f"📚 **Professores de {disciplina['nome_disciplina']}:**\n\n" + "\n".join([f"- {nome}" for nome in nomes])
+
+    return "Olá! Posso ajudar a verificar ausências, sugerir substitutos ou informar quem leciona cada disciplina."
 
 # ==========================================
 # GERENCIAMENTO DE CONVERSAS NO HISTÓRICO
@@ -386,7 +404,7 @@ def get_response(pergunta, engine):
 if "historico_conversas" not in st.session_state:
     st.session_state.historico_conversas = {
         "Nova Conversa": [
-            {"role": "assistant", "content": "Olá! 👋\n\nSou o Sistema de Apoio à Decisão para remanejamento docente. Como posso ajudar com as ausências de hoje?"}
+            {"role": "assistant", "content": "Olá! 👋\n\nSou o Sistema de Apoio à Decisão para remanejamento docente. Como posso ajudar com as ausências ou consultas de professores hoje?"}
         ]
     }
 
@@ -404,7 +422,7 @@ with st.sidebar:
         num_conversas = len(st.session_state.historico_conversas) + 1
         nome_nova = f"Conversa {num_conversas}"
         st.session_state.historico_conversas[nome_nova] = [
-            {"role": "assistant", "content": "Olá! 👋 Como posso ajudar no remanejamento de hoje?"}
+            {"role": "assistant", "content": "Olá! 👋 Como posso ajudar no remanejamento ou consultas de hoje?"}
         ]
         st.session_state.conversa_atual = nome_nova
         st.rerun()
@@ -430,7 +448,7 @@ st.markdown("---")
 for m in chat_ativo:
     with st.chat_message(m["role"]): st.markdown(m["content"])
 
-user_query = st.chat_input("Ex: O professor de Matemática do 6º Ano A faltou hoje na primeira aula...")
+user_query = st.chat_input("Ex: Quais são os professores de História? ou O professor de Matemática do 6º Ano A faltou...")
 if user_query:
     chat_ativo.append({"role": "user", "content": user_query})
     with st.chat_message("user"): st.markdown(user_query)
@@ -441,7 +459,7 @@ if user_query:
         chat_ativo.append({"role": "assistant", "content": ans})
     else:
         with st.chat_message("assistant"):
-            with st.spinner("🔍 Analisando grade e calculando substituição..."):
+            with st.spinner("🔍 Analisando banco de dados e grade..."):
                 try:
                     ans = get_response(user_query, st.session_state.engine)
                     st.markdown(ans)
