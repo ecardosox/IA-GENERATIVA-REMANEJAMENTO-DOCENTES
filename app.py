@@ -312,9 +312,9 @@ def processar_ausencia(pergunta, engine):
         relatorio += f"*(Não foi possível vincular o titular exato desta aula no banco de dados)*\n\n"
         
     if melhor_docente["mesma_disciplina"]:
-        relatorio += f"**Motivo:** O(a) docente está disponível na {horario['periodo_aula']} de {dia_semana} e já leciona **{disciplina['nome_disciplina']}**, tendo prioridade por menor carga horária.\n\n"
+        relatorio += f"**Motivo:** O(a) docente {melhor_docente['nome_professor']} está disponível na {horario['periodo_aula']} de {dia_semana} e já leciona **{disciplina['nome_disciplina']}**, tendo prioridade por menor carga horária.\n\n"
     else:
-        relatorio += f"**Motivo:** O(a) docente está disponível e foi selecionado por possuir menor carga horária.\n\n"
+        relatorio += f"**Motivo:** O(a) docente {melhor_docente['nome_professor']} está disponível e foi selecionado por possuir menor carga horária.\n\n"
         
     relatorio += f"**Disciplinas cadastradas:** {', '.join(disciplinas_docente) if disciplinas_docente else 'Nenhuma.'}\n\n"
     relatorio += f"---\n📅 **Dia:** {dia_semana.title()} | 🏫 **Turma:** {turma['nome_turma']} | 📚 **Disciplina:** {disciplina['nome_disciplina']} | 🕐 **Período:** {horario['periodo_aula']} ({horario['hora_inicio'].strftime('%H:%M')} às {horario['hora_fim'].strftime('%H:%M')})"
