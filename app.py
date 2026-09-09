@@ -7,7 +7,6 @@ import unicodedata
 from datetime import datetime 
 from zoneinfo import ZoneInfo 
 from sqlalchemy import create_engine, text 
-from urllib.parse import quote_plus 
 
 load_dotenv()
 
@@ -35,16 +34,13 @@ def pegar_configuracao(chave, valor_padrao=None):
 api_key = pegar_configuracao("GROQ_API_KEY")
 MODEL_NAME = "llama-3.3-70b-versatile"
 
-# Credenciais lidas do cofre do Streamlit ou do .env (com fallback seguro para o Supabase)
-user_env = pegar_configuracao("DB_USER", "postgres")
-password_env = pegar_configuracao("DB_PASSWORD", "pg%?c7mM9weA.H_")
-host_env = pegar_configuracao("DB_HOST", "db.zczcrovrisprvqnbcmtl.supabase.co")
-port_env = pegar_configuracao("DB_PORT", "5432")
-database_env = pegar_configuracao("DB_NAME", "postgres")
+# URL de Conexão Segura (Lida do cofre do Streamlit ou do .env)
+database_url_env = pegar_configuracao(
+    "DATABASE_URL", 
+    "postgresql://postgres:sua_senha_aqui@localhost:5432/postgres"
+)
 
-def init_database(user, password, host, port, database):
-    password_encoded = quote_plus(password)
-    db_uri = f"postgresql+psycopg2://{user}:{password_encoded}@{host}:{port}/{database}"
+def init_database(db_uri):
     return create_engine(db_uri)
 
 def testar_conexao(engine):
@@ -56,13 +52,13 @@ def testar_conexao(engine):
 # ==========================================
 if "engine" not in st.session_state:
     try:
-        engine_padrao = init_database(user_env, password_env, host_env, port_env, database_env)
+        engine_padrao = init_database(database_url_env)
         testar_conexao(engine_padrao)
         st.session_state.engine = engine_padrao
     except Exception as e:
         st.session_state.engine = None
         st.error(f"❌ Erro detalhado de conexão: {e}")
-        st.info(f"DEBUG: Host={host_env} | User={user_env} | Porta={port_env} | Base={database_env}")
+        st.info("DEBUG: Verifique se a DATABASE_URL está configurada corretamente nas Secrets do Streamlit.")
 
 def normalizar_texto(texto):
     if texto is None: return ""
