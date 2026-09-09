@@ -35,8 +35,12 @@ api_key = pegar_configuracao("GROQ_API_KEY")
 MODEL_NAME = "llama-3.3-70b-versatile"
 
 # URL de Conexão Segura (Lida do cofre do Streamlit ou do .env)
-# Lendo a URL de conexão de forma segura
-database_url_env = st.secrets.get("DATABASE_URL", os.getenv("DATABASE_URL", "postgresql://postgres:senha@localhost:5432/postgres"))
+
+user_env = pegar_configuracao("DB_USER", "postgres")
+password_env = pegar_configuracao("DB_PASSWORD", "*Milly2023*")
+host_env = pegar_configuracao("DB_HOST", "zczcrovrisprvqnbcmtl")
+port_env = pegar_configuracao("DB_PORT", "5432")
+database_env = pegar_configuracao("DB_NAME", "postgres")
 
 def init_database(db_uri):
     return create_engine(db_uri)
@@ -50,13 +54,13 @@ def testar_conexao(engine):
 # ==========================================
 if "engine" not in st.session_state:
     try:
-        engine_padrao = init_database(database_url_env)
+        engine_padrao = init_database(user_env, password_env, host_env, port_env, database_env)
         testar_conexao(engine_padrao)
         st.session_state.engine = engine_padrao
     except Exception as e:
         st.session_state.engine = None
         st.error(f"❌ Erro detalhado de conexão: {e}")
-        st.info("DEBUG: Verifique se a DATABASE_URL está configurada corretamente nas Secrets do Streamlit.")
+        st.info(f"DEBUG: Host={host_env} | User={user_env} | Porta={port_env} | Base={database_env}")
 
 def normalizar_texto(texto):
     if texto is None: return ""
