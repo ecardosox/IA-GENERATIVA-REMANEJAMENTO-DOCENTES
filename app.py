@@ -21,10 +21,6 @@ st.set_page_config(
 # FUNÇÃO DE SEGURANÇA (Chaves e Senhas)
 # ==========================================
 def pegar_configuracao(chave, valor_padrao=None):
-    """
-    Tenta pegar a senha do cofre do Streamlit (Nuvem). 
-    Se falhar, pega do arquivo .env local.
-    """
     try:
         if chave in st.secrets:
             return st.secrets[chave]
@@ -35,7 +31,6 @@ def pegar_configuracao(chave, valor_padrao=None):
 api_key = pegar_configuracao("GROQ_API_KEY")
 MODEL_NAME = "llama-3.3-70b-versatile"
 
-# URL de Conexão Segura
 DATABASE_URL = os.getenv("DATABASE_URL") or pegar_configuracao("DATABASE_URL")
 
 def init_database(db_uri):
@@ -45,9 +40,6 @@ def testar_conexao(engine):
     with engine.connect() as connection:
         connection.execute(text("SELECT 1"))
 
-# ==========================================
-# CONEXÃO AUTOMÁTICA AO BANCO (COM DIAGNÓSTICO)
-# ==========================================
 if "engine" not in st.session_state:
     try:
         if not DATABASE_URL:
@@ -114,6 +106,25 @@ def buscar_professores_por_disciplina(engine, id_disciplina):
     """
     with engine.connect() as connection:
         return connection.execute(text(sql), {"id_disciplina": id_disciplina}).mappings().all()
+
+def buscar_professor_por_turma_disciplina_dia(engine, id_turma, id_disciplina, dia_semana):
+    """Busca o professor específico para uma turma, disciplina e dia da semana na grade"""
+    sql = """
+        SELECT DISTINCT p.id_professor, p.nome_professor, h.dia_semana, h.periodo_aula
+        FROM grade_aulas ga
+        INNER JOIN professores p ON ga.id_professor = p.id_professor
+        INNER JOIN horarios h ON ga.id_horario = h.id_horario
+        WHERE ga.id_turma = :id_turma 
+          AND ga.id_disciplina = :id_disciplina
+    """
+    with engine.connect() as connection:
+        resultados = connection.execute(text(sql), {"id_turma": id_turma, "id_disciplina": id_disciplina}).mappings().all()
+    
+    # Filtra em Python para garantir flexibilidade com os nomes dos dias da semana
+    for r in resultados:
+        if normalizar_dia_semana(r["dia_semana"]) == normalizar_dia_semana(dia_semana):
+            return r
+    return None
 
 def buscar_professores_disponiveis(engine, id_horario, id_professor_original=None):
     sql = """
@@ -237,7 +248,8 @@ def identificar_disciplina(pergunta, disciplinas):
         ["historia", "hist"],
         ["geografia", "geo"],
         ["ciencias", "cien", "cie"],
-        ["ingles", "ing", "lingua inglesa"]
+        ["ingles", "ing", "lingua inglesa"],
+        ["tutoria", "tutor"]
     ]
     for grupo in grupos_sinonimos:
         if any(re.search(rf"\b{re.escape(s)}s?\b", pergunta_normalizada) for s in grupo):
@@ -380,7 +392,23 @@ def get_response(pergunta, engine):
         resposta_ia_mascarada = chamar_ia_generativa(pergunta_mascarada, resultado_mascarado)
         return remover_data_masking(resposta_ia_mascarada, mapa_completo)
 
-    # Intenção 2: Listar professores de uma disciplina específica
+    # Intenção 2: Pergunta específica sobre qual professor está em uma turma/disciplina em um dia específico (ex: "qual professor esta em tutoria no 9 ano A sexta feira")
+    elif "turma" in texto_norm or "ano" in texto_norm or any(d in texto_norm for d in ["segunda", "terca", "quarta", "quinta", "sexta"]):
+        turmas = buscar_turmas(engine)
+        disciplinas = buscar_disciplinas(engine)
+        
+        turma = identificar_turma(pergunta, turmas)
+        disciplina = identificar_disciplina(pergunta, disciplinas)
+        dia_semana = identificar_dia_semana_na_pergunta(pergunta) or get_data_atual()["dia_semana"]
+        
+        if turma and disciplina:
+            prof_grade = buscar_professor_por_turma_disciplina_dia(engine, turma["id_turma"], disciplina["id_disciplina"], dia_semana)
+            if prof_grade:
+                return f"👤 O(a) professor(a) responsável por **{disciplina['nome_disciplina']}** no(a) **{turma['nome_turma']}** na **{dia_semana.title()}** é **{prof_grade['nome_professor']}**."
+            else:
+                return f"⚠️ Não encontrei nenhum registro de **{disciplina['nome_disciplina']}** para o(a) **{turma['nome_turma']}** na **{dia_semana.title()}**."
+
+    # Intenção 3: Listar todos os professores de uma disciplina geral
     elif "professor" in texto_norm or "professores" in texto_norm:
         disciplinas = buscar_disciplinas(engine)
         disciplina = identificar_disciplina(pergunta, disciplinas)
@@ -396,7 +424,7 @@ def get_response(pergunta, engine):
         nomes = [p["nome_professor"] for p in professores]
         return f"📚 **Professores de {disciplina['nome_disciplina']}:**\n\n" + "\n".join([f"- {nome}" for nome in nomes])
 
-    return "Olá! Posso ajudar a verificar ausências, sugerir substitutos ou informar quem leciona cada disciplina."
+    return "Olá! Posso ajudar a verificar ausências, sugerir substitutos, informar quem leciona uma disciplina ou consultar a grade de horários."
 
 # ==========================================
 # GERENCIAMENTO DE CONVERSAS NO HISTÓRICO
@@ -404,7 +432,7 @@ def get_response(pergunta, engine):
 if "historico_conversas" not in st.session_state:
     st.session_state.historico_conversas = {
         "Nova Conversa": [
-            {"role": "assistant", "content": "Olá! 👋\n\nSou o Sistema de Apoio à Decisão para remanejamento docente. Como posso ajudar com as ausências ou consultas de professores hoje?"}
+            {"role": "assistant", "content": "Olá! 👋\n\nSou o Sistema de Apoio à Decisão para remanejamento docente. Como posso ajudar hoje?"}
         ]
     }
 
@@ -448,7 +476,7 @@ st.markdown("---")
 for m in chat_ativo:
     with st.chat_message(m["role"]): st.markdown(m["content"])
 
-user_query = st.chat_input("Ex: Quais são os professores de História? ou O professor de Matemática do 6º Ano A faltou...")
+user_query = st.chat_input("Ex: Qual professor está em tutoria no 9º Ano A sexta-feira?")
 if user_query:
     chat_ativo.append({"role": "user", "content": user_query})
     with st.chat_message("user"): st.markdown(user_query)
@@ -459,7 +487,7 @@ if user_query:
         chat_ativo.append({"role": "assistant", "content": ans})
     else:
         with st.chat_message("assistant"):
-            with st.spinner("🔍 Analisando banco de dados e grade..."):
+            with st.spinner("🔍 Consultando grade de horários..."):
                 try:
                     ans = get_response(user_query, st.session_state.engine)
                     st.markdown(ans)
