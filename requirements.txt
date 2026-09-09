@@ -1,0 +1,9 @@
+python-dotenv
+langchain-core
+langchain-community
+langchain-groq
+streamlit
+psycopg2-binary
+sqlalchemy
+pandas
+requests
