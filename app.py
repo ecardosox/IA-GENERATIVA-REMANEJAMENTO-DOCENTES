@@ -35,12 +35,12 @@ def pegar_configuracao(chave, valor_padrao=None):
 api_key = pegar_configuracao("GROQ_API_KEY")
 MODEL_NAME = "llama-3.3-70b-versatile"
 
-# Credenciais lidas de forma segura (Local ou Nuvem)
+# Credenciais lidas do cofre do Streamlit ou do .env (com fallback seguro para o Supabase)
 user_env = pegar_configuracao("DB_USER", "postgres")
-password_env = pegar_configuracao("DB_PASSWORD", "postgres")
-host_env = pegar_configuracao("DB_HOST", "localhost")
+password_env = pegar_configuracao("DB_PASSWORD", "pg%?c7mM9weA.H_")
+host_env = pegar_configuracao("DB_HOST", "db.zczcrovrisprvqnbcmtl.supabase.co")
 port_env = pegar_configuracao("DB_PORT", "5432")
-database_env = pegar_configuracao("DB_NAME", "db_grade_horaria")
+database_env = pegar_configuracao("DB_NAME", "postgres")
 
 def init_database(user, password, host, port, database):
     password_encoded = quote_plus(password)
@@ -52,7 +52,7 @@ def testar_conexao(engine):
         connection.execute(text("SELECT 1"))
 
 # ==========================================
-# CONEXÃO AUTOMÁTICA INVISÍVEL AO BANCO
+# CONEXÃO AUTOMÁTICA AO BANCO (COM DIAGNÓSTICO)
 # ==========================================
 if "engine" not in st.session_state:
     try:
@@ -61,7 +61,8 @@ if "engine" not in st.session_state:
         st.session_state.engine = engine_padrao
     except Exception as e:
         st.session_state.engine = None
-        print(f"Erro na conexão automática: {e}")
+        st.error(f"❌ Erro detalhado de conexão: {e}")
+        st.info(f"DEBUG: Host={host_env} | User={user_env} | Porta={port_env} | Base={database_env}")
 
 def normalizar_texto(texto):
     if texto is None: return ""
