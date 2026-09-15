@@ -107,6 +107,20 @@ def buscar_professores_por_disciplina(engine, id_disciplina):
     with engine.connect() as connection:
         return connection.execute(text(sql), {"id_disciplina": id_disciplina}).mappings().all()
 
+def buscar_professores_sem_disciplina(engine):
+    sql = """
+        SELECT p.id_professor, p.nome_professor
+        FROM professores p
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM grade_aulas ga
+            WHERE ga.id_professor = p.id_professor
+        )
+        ORDER BY p.nome_professor
+    """
+    with engine.connect() as connection:
+        return connection.execute(text(sql)).mappings().all()
+
 def buscar_professor_por_turma_disciplina_dia(engine, id_turma, id_disciplina, dia_semana):
     """Busca o professor específico para uma turma, disciplina e dia da semana na grade"""
     sql = """
@@ -514,7 +528,18 @@ def get_response(pergunta, engine, historico=None):
         lista_disciplinas = ", ".join(disciplinas_professor)
         return f"📚 O(a) professor(a) **{professor['nome_professor']}** leciona: **{lista_disciplinas}**."
 
-    # Intenção 3: Pergunta específica sobre qual professor está em uma turma/disciplina em um dia específico (ex: "qual professor esta em tutoria no 9 ano A sexta feira")
+    # Intenção 3: Listar professores sem disciplina cadastrada
+    elif any(k in texto_norm for k in ["sem disciplina", "nao tem disciplina", "nao possui disciplina"]):
+        professores_sem_disciplina = buscar_professores_sem_disciplina(engine)
+        if not professores_sem_disciplina:
+            return "✅ Todos os professores possuem pelo menos uma disciplina cadastrada."
+
+        nomes = [professor["nome_professor"] for professor in professores_sem_disciplina]
+        return "👥 **Professores sem disciplina cadastrada:**\n\n" + "\n".join(
+            f"- {nome}" for nome in nomes
+        )
+
+    # Intenção 4: Pergunta específica sobre qual professor está em uma turma/disciplina em um dia específico (ex: "qual professor esta em tutoria no 9 ano A sexta feira")
     elif "turma" in texto_norm or "ano" in texto_norm or any(d in texto_norm for d in ["segunda", "terca", "quarta", "quinta", "sexta"]):
         turmas = buscar_turmas(engine)
         disciplinas = buscar_disciplinas(engine)
@@ -530,7 +555,7 @@ def get_response(pergunta, engine, historico=None):
             else:
                 return f"⚠️ Não encontrei nenhum registro de **{disciplina['nome_disciplina']}** para o(a) **{turma['nome_turma']}** na **{dia_semana.title()}**."
 
-    # Intenção 4: Listar todos os professores de uma disciplina geral
+    # Intenção 5: Listar todos os professores de uma disciplina geral
     elif "professor" in texto_norm or "professores" in texto_norm:
         disciplinas = buscar_disciplinas(engine)
         disciplina = identificar_disciplina(pergunta, disciplinas)
