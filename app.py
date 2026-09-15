@@ -178,6 +178,53 @@ def buscar_professor_original(engine, id_disciplina, id_turma):
     with engine.connect() as connection:
         return connection.execute(text(sql), {"id_disciplina": id_disciplina, "id_turma": id_turma}).mappings().first()
 
+def identificar_professor(pergunta, professores):
+    pergunta_normalizada = normalizar_texto(pergunta)
+    candidatos = []
+
+    for professor in professores:
+        nome_normalizado = normalizar_texto(professor["nome_professor"])
+        if nome_normalizado in pergunta_normalizada:
+            candidatos.append((2, len(nome_normalizado), professor))
+            continue
+
+        partes_nome = [parte for parte in nome_normalizado.split() if len(parte) >= 3]
+        partes_encontradas = sum(
+            bool(re.search(rf"\b{re.escape(parte)}\b", pergunta_normalizada))
+            for parte in partes_nome
+        )
+        if partes_encontradas:
+            candidatos.append((1, partes_encontradas / len(partes_nome), professor))
+
+    if not candidatos:
+        return None
+
+    candidatos.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidatos[0][2]
+
+def buscar_aula_atual_do_professor(engine, id_professor, dia_semana, hora_atual):
+    sql = """
+        SELECT p.id_professor, p.nome_professor,
+               d.id_disciplina, d.nome_disciplina,
+               t.id_turma, t.nome_turma,
+               h.id_horario, h.dia_semana, h.periodo_aula,
+               h.hora_inicio, h.hora_fim
+        FROM grade_aulas ga
+        INNER JOIN professores p ON ga.id_professor = p.id_professor
+        INNER JOIN disciplina d ON ga.id_disciplina = d.id_disciplina
+        INNER JOIN turma t ON ga.id_turma = t.id_turma
+        INNER JOIN horarios h ON ga.id_horario = h.id_horario
+        WHERE ga.id_professor = :id_professor
+    """
+    with engine.connect() as connection:
+        aulas = connection.execute(text(sql), {"id_professor": id_professor}).mappings().all()
+
+    for aula in aulas:
+        dentro_do_horario = aula["hora_inicio"] <= hora_atual < aula["hora_fim"]
+        if horario_corresponde_dia(aula["dia_semana"], dia_semana) and dentro_do_horario:
+            return aula
+    return None
+
 # ==========================================
 # REGRAS E IDENTIFICAÇÃO
 # ==========================================
@@ -299,16 +346,41 @@ def processar_ausencia(pergunta, engine):
     horarios = buscar_horarios(engine)
     
     disciplina = identificar_disciplina(pergunta, disciplinas)
-    if not disciplina: return "⚠️ Não consegui identificar a **disciplina** na pergunta."
-        
     turma = identificar_turma(pergunta, turmas)
-    if not turma: return "⚠️ Não consegui identificar a **turma** na pergunta."
-        
-    periodo = identificar_periodo(pergunta)
-    horario = encontrar_horario_por_periodo(horarios, dia_semana, periodo)
-    if not horario: return f"⚠️ Não encontrei horário para **{dia_semana}** no período **{periodo}**."
-        
-    professor_original = buscar_professor_original(engine, disciplina["id_disciplina"], turma["id_turma"])
+    professor_informado = identificar_professor(pergunta, buscar_professores(engine))
+    professor_original = None
+
+    if professor_informado and not disciplina and not turma:
+        horario = buscar_aula_atual_do_professor(
+            engine,
+            professor_informado["id_professor"],
+            dia_semana,
+            data_info["hora_atual"]
+        )
+        if not horario:
+            return (
+                f"⚠️ Não encontrei uma aula em andamento para **{professor_informado['nome_professor']}** "
+                f"neste momento ({data_info['hora_atual'].strftime('%H:%M')})."
+            )
+
+        disciplina = {
+            "id_disciplina": horario["id_disciplina"],
+            "nome_disciplina": horario["nome_disciplina"]
+        }
+        turma = {
+            "id_turma": horario["id_turma"],
+            "nome_turma": horario["nome_turma"]
+        }
+        professor_original = professor_informado
+    else:
+        if not disciplina: return "⚠️ Não consegui identificar a **disciplina** na pergunta."
+        if not turma: return "⚠️ Não consegui identificar a **turma** na pergunta."
+
+        periodo = identificar_periodo(pergunta)
+        horario = encontrar_horario_por_periodo(horarios, dia_semana, periodo)
+        if not horario: return f"⚠️ Não encontrei horário para **{dia_semana}** no período **{periodo}**."
+
+        professor_original = buscar_professor_original(engine, disciplina["id_disciplina"], turma["id_turma"])
     id_orig_val = professor_original["id_professor"] if professor_original else None
 
     professores_disponiveis = buscar_professores_disponiveis(engine, horario["id_horario"], id_orig_val)
