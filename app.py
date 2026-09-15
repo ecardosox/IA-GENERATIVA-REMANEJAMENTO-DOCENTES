@@ -363,12 +363,32 @@ def remover_data_masking(texto_mascarado, mapa_nomes):
 # ==========================================
 # INTEGRAÇÃO IA COM PROTEÇÃO DE DADOS
 # ==========================================
-def chamar_ia_generativa(pergunta_usuario_mascarada, contexto_banco_mascarado):
+def chamar_ia_generativa(pergunta_usuario_mascarada, contexto_banco_mascarado, historico_mascarado=None):
     if not api_key: return contexto_banco_mascarado
-    prompt = f"Você é um assistente escolar de remanejamento. Pergunta: '{pergunta_usuario_mascarada}'. Dados do banco: {contexto_banco_mascarado}. Escreva uma resposta clara, empática e profissional formatada em Markdown, baseando-se apenas nos dados informados."
-    
+
+    mensagens = [{
+        "role": "system",
+        "content": (
+            "Você é um assistente escolar de remanejamento. Responda em português, "
+            "com clareza, empatia e profissionalismo, usando Markdown. "
+            "Baseie respostas sobre a grade exclusivamente nos dados do banco "
+            "fornecidos na mensagem atual. Não invente informações."
+        )
+    }]
+
+    if historico_mascarado:
+        mensagens.extend(historico_mascarado[-10:])
+
+    mensagens.append({
+        "role": "user",
+        "content": (
+            f"Pergunta atual: {pergunta_usuario_mascarada}\n\n"
+            f"Dados do banco para esta pergunta:\n{contexto_banco_mascarado}"
+        )
+    })
+
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    data = {"model": MODEL_NAME, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3}
+    data = {"model": MODEL_NAME, "messages": mensagens, "temperature": 0.3}
     try:
         response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data, timeout=10)
         if response.status_code == 200: 
@@ -377,7 +397,9 @@ def chamar_ia_generativa(pergunta_usuario_mascarada, contexto_banco_mascarado):
     except Exception: 
         return contexto_banco_mascarado
 
-def get_response(pergunta, engine):
+# GERENCIAMENTO DE CONTEXTO
+
+def get_response(pergunta, engine, historico=None):
     texto_norm = normalizar_texto(pergunta)
     
     # Intenção 1: Ausência / Substituição / Remanejamento
@@ -388,8 +410,18 @@ def get_response(pergunta, engine):
         resultado_mascarado, mapa_resultado = aplicar_data_masking(resultado_banco, engine)
         
         mapa_completo = {**mapa_pergunta, **mapa_resultado}
-        
-        resposta_ia_mascarada = chamar_ia_generativa(pergunta_mascarada, resultado_mascarado)
+
+        historico_mascarado = []
+        for mensagem in (historico or [])[:-1]:
+            conteudo_mascarado, mapa_historico = aplicar_data_masking(mensagem["content"], engine)
+            historico_mascarado.append({"role": mensagem["role"], "content": conteudo_mascarado})
+            mapa_completo.update(mapa_historico)
+
+        resposta_ia_mascarada = chamar_ia_generativa(
+            pergunta_mascarada,
+            resultado_mascarado,
+            historico_mascarado
+        )
         return remover_data_masking(resposta_ia_mascarada, mapa_completo)
 
     # Intenção 2: Pergunta específica sobre qual professor está em uma turma/disciplina em um dia específico (ex: "qual professor esta em tutoria no 9 ano A sexta feira")
@@ -489,7 +521,7 @@ if user_query:
         with st.chat_message("assistant"):
             with st.spinner("🔍 Consultando grade de horários..."):
                 try:
-                    ans = get_response(user_query, st.session_state.engine)
+                    ans = get_response(user_query, st.session_state.engine, chat_ativo)
                     st.markdown(ans)
                     chat_ativo.append({"role": "assistant", "content": ans})
                 except Exception as e: 
