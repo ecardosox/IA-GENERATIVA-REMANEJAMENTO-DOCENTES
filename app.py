@@ -507,27 +507,12 @@ def get_response(pergunta, engine, historico=None):
         if not professor:
             return "⚠️ Não consegui identificar o professor na pergunta."
 
-        data_info = get_data_atual()
-        aula_atual = buscar_aula_atual_do_professor(
-            engine,
-            professor["id_professor"],
-            data_info["dia_semana"],
-            data_info["hora_atual"]
-        )
+        disciplinas_professor = buscar_disciplinas_professor(engine, professor["id_professor"])
+        if not disciplinas_professor:
+            return f"⚠️ Não encontrei disciplinas cadastradas para **{professor['nome_professor']}**."
 
-        if not aula_atual:
-            return (
-                f"⚠️ Não encontrei uma aula em andamento para **{professor['nome_professor']}** "
-                f"neste momento ({data_info['hora_atual'].strftime('%H:%M')})."
-            )
-
-        return (
-            f"📚 O(a) professor(a) **{aula_atual['nome_professor']}** está dando "
-            f"**{aula_atual['nome_disciplina']}** para a turma **{aula_atual['nome_turma']}** "
-            f"no período **{aula_atual['periodo_aula']}** "
-            f"({aula_atual['hora_inicio'].strftime('%H:%M')} às "
-            f"{aula_atual['hora_fim'].strftime('%H:%M')})."
-        )
+        lista_disciplinas = ", ".join(disciplinas_professor)
+        return f"📚 O(a) professor(a) **{professor['nome_professor']}** leciona: **{lista_disciplinas}**."
 
     # Intenção 3: Pergunta específica sobre qual professor está em uma turma/disciplina em um dia específico (ex: "qual professor esta em tutoria no 9 ano A sexta feira")
     elif "turma" in texto_norm or "ano" in texto_norm or any(d in texto_norm for d in ["segunda", "terca", "quarta", "quinta", "sexta"]):
