@@ -202,7 +202,7 @@ def identificar_professor(pergunta, professores):
     candidatos.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return candidatos[0][2]
 
-def buscar_aula_atual_do_professor(engine, id_professor, dia_semana, hora_atual):
+def buscar_aula_atual_do_professor(engine, id_professor, dia_semana, hora_atual, id_disciplina=None):
     sql = """
         SELECT p.id_professor, p.nome_professor,
                d.id_disciplina, d.nome_disciplina,
@@ -221,7 +221,8 @@ def buscar_aula_atual_do_professor(engine, id_professor, dia_semana, hora_atual)
 
     for aula in aulas:
         dentro_do_horario = aula["hora_inicio"] <= hora_atual < aula["hora_fim"]
-        if horario_corresponde_dia(aula["dia_semana"], dia_semana) and dentro_do_horario:
+        mesma_disciplina = id_disciplina is None or aula["id_disciplina"] == id_disciplina
+        if horario_corresponde_dia(aula["dia_semana"], dia_semana) and dentro_do_horario and mesma_disciplina:
             return aula
     return None
 
@@ -350,12 +351,13 @@ def processar_ausencia(pergunta, engine):
     professor_informado = identificar_professor(pergunta, buscar_professores(engine))
     professor_original = None
 
-    if professor_informado and not disciplina and not turma:
+    if professor_informado and not turma:
         horario = buscar_aula_atual_do_professor(
             engine,
             professor_informado["id_professor"],
             dia_semana,
-            data_info["hora_atual"]
+            data_info["hora_atual"],
+            disciplina["id_disciplina"] if disciplina else None
         )
         if not horario:
             return (
@@ -363,10 +365,11 @@ def processar_ausencia(pergunta, engine):
                 f"neste momento ({data_info['hora_atual'].strftime('%H:%M')})."
             )
 
-        disciplina = {
-            "id_disciplina": horario["id_disciplina"],
-            "nome_disciplina": horario["nome_disciplina"]
-        }
+        if not disciplina:
+            disciplina = {
+                "id_disciplina": horario["id_disciplina"],
+                "nome_disciplina": horario["nome_disciplina"]
+            }
         turma = {
             "id_turma": horario["id_turma"],
             "nome_turma": horario["nome_turma"]
@@ -496,7 +499,37 @@ def get_response(pergunta, engine, historico=None):
         )
         return remover_data_masking(resposta_ia_mascarada, mapa_completo)
 
-    # Intenção 2: Pergunta específica sobre qual professor está em uma turma/disciplina em um dia específico (ex: "qual professor esta em tutoria no 9 ano A sexta feira")
+    # Intenção 2: Consultar a disciplina da aula atual de um professor
+    elif any(k in texto_norm for k in ["qual materia", "qual disciplina", "da aula", "dando aula"]):
+        professores = buscar_professores(engine)
+        professor = identificar_professor(pergunta, professores)
+
+        if not professor:
+            return "⚠️ Não consegui identificar o professor na pergunta."
+
+        data_info = get_data_atual()
+        aula_atual = buscar_aula_atual_do_professor(
+            engine,
+            professor["id_professor"],
+            data_info["dia_semana"],
+            data_info["hora_atual"]
+        )
+
+        if not aula_atual:
+            return (
+                f"⚠️ Não encontrei uma aula em andamento para **{professor['nome_professor']}** "
+                f"neste momento ({data_info['hora_atual'].strftime('%H:%M')})."
+            )
+
+        return (
+            f"📚 O(a) professor(a) **{aula_atual['nome_professor']}** está dando "
+            f"**{aula_atual['nome_disciplina']}** para a turma **{aula_atual['nome_turma']}** "
+            f"no período **{aula_atual['periodo_aula']}** "
+            f"({aula_atual['hora_inicio'].strftime('%H:%M')} às "
+            f"{aula_atual['hora_fim'].strftime('%H:%M')})."
+        )
+
+    # Intenção 3: Pergunta específica sobre qual professor está em uma turma/disciplina em um dia específico (ex: "qual professor esta em tutoria no 9 ano A sexta feira")
     elif "turma" in texto_norm or "ano" in texto_norm or any(d in texto_norm for d in ["segunda", "terca", "quarta", "quinta", "sexta"]):
         turmas = buscar_turmas(engine)
         disciplinas = buscar_disciplinas(engine)
@@ -512,7 +545,7 @@ def get_response(pergunta, engine, historico=None):
             else:
                 return f"⚠️ Não encontrei nenhum registro de **{disciplina['nome_disciplina']}** para o(a) **{turma['nome_turma']}** na **{dia_semana.title()}**."
 
-    # Intenção 3: Listar todos os professores de uma disciplina geral
+    # Intenção 4: Listar todos os professores de uma disciplina geral
     elif "professor" in texto_norm or "professores" in texto_norm:
         disciplinas = buscar_disciplinas(engine)
         disciplina = identificar_disciplina(pergunta, disciplinas)
