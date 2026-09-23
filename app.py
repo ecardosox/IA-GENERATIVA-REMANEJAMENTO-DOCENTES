@@ -73,6 +73,29 @@ def get_data_atual():
         "datetime": agora 
     }
 
+def identificar_data_hora_na_pergunta(pergunta):
+    """Retorna a data e hora informadas ou o momento atual quando omitidas."""
+    agora = get_data_atual()["datetime"]
+    texto = normalizar_texto(pergunta)
+    data_encontrada = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b", texto)
+    hora_encontrada = re.search(r"\b(\d{1,2}):(\d{2})\b", texto)
+
+    if not data_encontrada and not hora_encontrada:
+        return agora
+
+    try:
+        dia = int(data_encontrada.group(1)) if data_encontrada else agora.day
+        mes = int(data_encontrada.group(2)) if data_encontrada else agora.month
+        ano_texto = data_encontrada.group(3) if data_encontrada else None
+        ano = int(ano_texto) if ano_texto else agora.year
+        if ano < 100:
+            ano += 2000
+        hora = int(hora_encontrada.group(1)) if hora_encontrada else agora.hour
+        minuto = int(hora_encontrada.group(2)) if hora_encontrada else agora.minute
+        return agora.replace(year=ano, month=mes, day=dia, hour=hora, minute=minuto, second=0, microsecond=0)
+    except ValueError:
+        return agora
+
 # ==========================================
 # CONSULTAS AO BANCO DE DADOS
 # ==========================================
@@ -352,9 +375,46 @@ def escolher_melhor_docente(engine, professores_disponiveis, disciplina):
         return sorted(candidatos_outras_d, key=lambda p: (p["carga_horaria"], p["nome_professor"]))[0]
     return None
 
+def registrar_substituicao(data_referencia, dia_semana, horario, turma, disciplina, professor_original, melhor_docente):
+    substituicoes = st.session_state.setdefault("substituicoes_registradas", [])
+    registro = {
+        "data": data_referencia.date(),
+        "dia_semana": dia_semana,
+        "periodo": horario["periodo_aula"],
+        "turma": turma["nome_turma"],
+        "disciplina": disciplina["nome_disciplina"],
+        "ausente": professor_original["nome_professor"] if professor_original else "Não identificado",
+        "substituto": melhor_docente["nome_professor"]
+    }
+    chave = (registro["data"], registro["periodo"], registro["turma"], registro["ausente"])
+    if not any((item["data"], item["periodo"], item["turma"], item["ausente"]) == chave for item in substituicoes):
+        substituicoes.append(registro)
+
+def listar_substituicoes_do_dia(pergunta):
+    data_referencia = identificar_data_hora_na_pergunta(pergunta)
+    registros = [
+        item for item in st.session_state.get("substituicoes_registradas", [])
+        if item["data"] == data_referencia.date()
+    ]
+    if not registros:
+        return f"ℹ️ Ainda não há substituições registradas para **{data_referencia.strftime('%d/%m/%Y')}** nesta conversa."
+
+    registros.sort(key=lambda item: (int(re.search(r"\d+", str(item["periodo"])).group()), item["turma"]))
+    relatorio = f"**Substituições registradas em {data_referencia.strftime('%d/%m/%Y')}:**\n\n"
+    relatorio += "\n".join(
+        f"- **{item['periodo']} período:** {item['ausente']} → {item['substituto']} | "
+        f"{item['turma']} | {item['disciplina']}"
+        for item in registros
+    )
+    return relatorio
+
 def processar_ausencia(pergunta, engine):
-    data_info = get_data_atual()
-    dia_semana = identificar_dia_semana_na_pergunta(pergunta) or data_info["dia_semana"]
+    data_referencia = identificar_data_hora_na_pergunta(pergunta)
+    dias_semana = {
+        0: "segunda-feira", 1: "terça-feira", 2: "quarta-feira",
+        3: "quinta-feira", 4: "sexta-feira", 5: "sábado", 6: "domingo"
+    }
+    dia_semana = identificar_dia_semana_na_pergunta(pergunta) or dias_semana[data_referencia.weekday()]
     
     turmas = buscar_turmas(engine)
     disciplinas = buscar_disciplinas(engine)
@@ -370,13 +430,13 @@ def processar_ausencia(pergunta, engine):
             engine,
             professor_informado["id_professor"],
             dia_semana,
-            data_info["hora_atual"],
+            data_referencia.time(),
             disciplina["id_disciplina"] if disciplina else None
         )
         if not horario:
             return (
                 f"⚠️ Não encontrei uma aula em andamento para **{professor_informado['nome_professor']}** "
-                f"neste momento ({data_info['hora_atual'].strftime('%H:%M')})."
+                f"neste momento ({data_referencia.strftime('%d/%m às %H:%M')})."
             )
 
         if not disciplina:
@@ -406,6 +466,16 @@ def processar_ausencia(pergunta, engine):
         
     melhor_docente = escolher_melhor_docente(engine, professores_disponiveis, disciplina)
     if not melhor_docente: return "⚠️ Não foi possível selecionar um docente para substituição."
+
+    registrar_substituicao(
+        data_referencia,
+        dia_semana,
+        horario,
+        turma,
+        disciplina,
+        professor_original,
+        melhor_docente
+    )
         
     disciplinas_docente = buscar_disciplinas_professor(engine, melhor_docente["id_professor"])
     
@@ -490,6 +560,9 @@ def chamar_ia_generativa(pergunta_usuario_mascarada, contexto_banco_mascarado, h
 
 def get_response(pergunta, engine, historico=None):
     texto_norm = normalizar_texto(pergunta)
+
+    if any(k in texto_norm for k in ["substituicoes do dia", "substituicoes de hoje", "remanejamentos do dia"]):
+        return listar_substituicoes_do_dia(pergunta)
     
     # Intenção 1: Ausência / Substituição / Remanejamento
     if any(k in texto_norm for k in ["falta", "faltou", "ausente", "substituir", "remanejamento", "substituto"]):
