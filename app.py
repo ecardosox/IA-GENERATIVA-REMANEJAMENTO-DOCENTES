@@ -489,6 +489,46 @@ def processar_aulas_anteriores(pergunta, historico, engine):
     )
     return relatorio
 
+def processar_consulta_aulas_professor(pergunta, engine):
+    professores = buscar_professores(engine)
+    professor = identificar_professor(pergunta, professores)
+    if not professor:
+        return "⚠️ Não consegui identificar a professora na pergunta."
+
+    disciplinas = buscar_disciplinas(engine)
+    disciplina = identificar_disciplina(pergunta, disciplinas)
+    data_referencia = identificar_data_hora_na_pergunta(pergunta)
+    dias_semana = {
+        0: "segunda-feira", 1: "terça-feira", 2: "quarta-feira",
+        3: "quinta-feira", 4: "sexta-feira", 5: "sábado", 6: "domingo"
+    }
+    dia_semana = identificar_dia_semana_na_pergunta(pergunta) or dias_semana[data_referencia.weekday()]
+    aulas = buscar_aulas_do_professor_no_dia(
+        engine,
+        professor["id_professor"],
+        dia_semana,
+        disciplina["id_disciplina"] if disciplina else None
+    )
+
+    if not aulas:
+        materia = f" de {disciplina['nome_disciplina']}" if disciplina else ""
+        return (
+            f"ℹ️ Não encontrei aulas{materia} para **{professor['nome_professor']}** em "
+            f"**{dia_semana.title()} ({data_referencia.strftime('%d/%m/%Y')})**."
+        )
+
+    materia = f" de {disciplina['nome_disciplina']}" if disciplina else ""
+    relatorio = (
+        f"**Aulas{materia} de {professor['nome_professor']} em "
+        f"{dia_semana.title()} ({data_referencia.strftime('%d/%m/%Y')}):**\n\n"
+    )
+    relatorio += "\n".join(
+        f"- **{aula['periodo_aula']} período** ({aula['hora_inicio'].strftime('%H:%M')} às "
+        f"{aula['hora_fim'].strftime('%H:%M')}): {aula['nome_disciplina']} | {aula['nome_turma']}"
+        for aula in aulas
+    )
+    return relatorio
+
 def processar_ausencia_do_dia(data_referencia, dia_semana, professor, disciplina, engine):
     aulas = buscar_aulas_do_professor_no_dia(
         engine,
@@ -703,6 +743,13 @@ def chamar_ia_generativa(pergunta_usuario_mascarada, contexto_banco_mascarado, h
 
 def get_response(pergunta, engine, historico=None):
     texto_norm = normalizar_texto(pergunta)
+
+    if (
+        "aula" in texto_norm
+        and ("professor" in texto_norm or "professora" in texto_norm)
+        and ("amanha" in texto_norm or re.search(r"\b\d{1,2}/\d{1,2}", texto_norm))
+    ):
+        return processar_consulta_aulas_professor(pergunta, engine)
 
     if any(k in texto_norm for k in ["aulas anteriores", "aula anterior", "antes"]):
         return processar_aulas_anteriores(pergunta, historico, engine)
