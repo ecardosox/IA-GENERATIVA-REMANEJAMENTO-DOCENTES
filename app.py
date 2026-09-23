@@ -4,7 +4,7 @@ import requests
 import os 
 import re 
 import unicodedata 
-from datetime import datetime 
+from datetime import datetime, timedelta 
 from zoneinfo import ZoneInfo 
 from sqlalchemy import create_engine, text 
 import psycopg2
@@ -77,6 +77,8 @@ def identificar_data_hora_na_pergunta(pergunta):
     """Retorna a data e hora informadas ou o momento atual quando omitidas."""
     agora = get_data_atual()["datetime"]
     texto = normalizar_texto(pergunta)
+    if re.search(r"\bamanha\b", texto):
+        agora = agora + timedelta(days=1)
     data_encontrada = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b", texto)
     hora_encontrada = re.search(r"\b(\d{1,2}):(\d{2})\b", texto)
 
@@ -262,6 +264,30 @@ def buscar_aula_atual_do_professor(engine, id_professor, dia_semana, hora_atual,
         if horario_corresponde_dia(aula["dia_semana"], dia_semana) and dentro_do_horario and mesma_disciplina:
             return aula
     return None
+
+def buscar_aulas_do_professor_no_dia(engine, id_professor, dia_semana, id_disciplina=None):
+    sql = """
+        SELECT p.id_professor, p.nome_professor,
+               d.id_disciplina, d.nome_disciplina,
+               t.id_turma, t.nome_turma,
+               h.id_horario, h.dia_semana, h.periodo_aula,
+               h.hora_inicio, h.hora_fim
+        FROM grade_aulas ga
+        INNER JOIN professores p ON ga.id_professor = p.id_professor
+        INNER JOIN disciplina d ON ga.id_disciplina = d.id_disciplina
+        INNER JOIN turma t ON ga.id_turma = t.id_turma
+        INNER JOIN horarios h ON ga.id_horario = h.id_horario
+        WHERE ga.id_professor = :id_professor
+        ORDER BY h.hora_inicio, h.periodo_aula, t.nome_turma
+    """
+    with engine.connect() as connection:
+        aulas = connection.execute(text(sql), {"id_professor": id_professor}).mappings().all()
+
+    return [
+        aula for aula in aulas
+        if horario_corresponde_dia(aula["dia_semana"], dia_semana)
+        and (id_disciplina is None or aula["id_disciplina"] == id_disciplina)
+    ]
 
 def buscar_aulas_anteriores_do_professor(engine, id_professor, dia_semana, hora_atual):
     sql = """
@@ -463,6 +489,59 @@ def processar_aulas_anteriores(pergunta, historico, engine):
     )
     return relatorio
 
+def processar_ausencia_do_dia(data_referencia, dia_semana, professor, disciplina, engine):
+    aulas = buscar_aulas_do_professor_no_dia(
+        engine,
+        professor["id_professor"],
+        dia_semana,
+        disciplina["id_disciplina"] if disciplina else None
+    )
+    if not aulas:
+        return (
+            f"⚠️ Não encontrei aulas para **{professor['nome_professor']}** em "
+            f"**{dia_semana.title()} ({data_referencia.strftime('%d/%m/%Y')})**."
+        )
+
+    resultados = []
+    for aula in aulas:
+        professores_disponiveis = buscar_professores_disponiveis(
+            engine, aula["id_horario"], professor["id_professor"]
+        )
+        melhor_docente = escolher_melhor_docente(
+            engine, professores_disponiveis, {
+                "id_disciplina": aula["id_disciplina"],
+                "nome_disciplina": aula["nome_disciplina"]
+            }
+        )
+        if not melhor_docente:
+            resultados.append(
+                f"- **{aula['periodo_aula']} período** ({aula['hora_inicio'].strftime('%H:%M')} às "
+                f"{aula['hora_fim'].strftime('%H:%M')}): {aula['nome_turma']} | "
+                f"{aula['nome_disciplina']} | nenhum docente disponível"
+            )
+            continue
+
+        registrar_substituicao(
+            data_referencia,
+            dia_semana,
+            aula,
+            {"nome_turma": aula["nome_turma"]},
+            {"nome_disciplina": aula["nome_disciplina"]},
+            professor,
+            melhor_docente
+        )
+        resultados.append(
+            f"- **{aula['periodo_aula']} período** ({aula['hora_inicio'].strftime('%H:%M')} às "
+            f"{aula['hora_fim'].strftime('%H:%M')}): {aula['nome_turma']} | "
+            f"{aula['nome_disciplina']} → **{melhor_docente['nome_professor']}**"
+        )
+
+    return (
+        f"**Substituições previstas para {professor['nome_professor']} em "
+        f"{dia_semana.title()} ({data_referencia.strftime('%d/%m/%Y')}):**\n\n"
+        + "\n".join(resultados)
+    )
+
 def processar_ausencia(pergunta, engine):
     data_referencia = identificar_data_hora_na_pergunta(pergunta)
     dias_semana = {
@@ -481,6 +560,15 @@ def processar_ausencia(pergunta, engine):
     professor_original = None
 
     if professor_informado and not turma:
+        if re.search(r"\bamanha\b", normalizar_texto(pergunta)):
+            return processar_ausencia_do_dia(
+                data_referencia,
+                dia_semana,
+                professor_informado,
+                disciplina,
+                engine
+            )
+
         horario = buscar_aula_atual_do_professor(
             engine,
             professor_informado["id_professor"],
