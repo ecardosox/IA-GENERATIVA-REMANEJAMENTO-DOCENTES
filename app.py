@@ -263,6 +263,26 @@ def buscar_aula_atual_do_professor(engine, id_professor, dia_semana, hora_atual,
             return aula
     return None
 
+def buscar_aulas_anteriores_do_professor(engine, id_professor, dia_semana, hora_atual):
+    sql = """
+        SELECT d.nome_disciplina, t.nome_turma, h.dia_semana, h.periodo_aula,
+               h.hora_inicio, h.hora_fim
+        FROM grade_aulas ga
+        INNER JOIN disciplina d ON ga.id_disciplina = d.id_disciplina
+        INNER JOIN turma t ON ga.id_turma = t.id_turma
+        INNER JOIN horarios h ON ga.id_horario = h.id_horario
+        WHERE ga.id_professor = :id_professor
+        ORDER BY h.hora_inicio, h.periodo_aula, t.nome_turma
+    """
+    with engine.connect() as connection:
+        aulas = connection.execute(text(sql), {"id_professor": id_professor}).mappings().all()
+
+    return [
+        aula for aula in aulas
+        if horario_corresponde_dia(aula["dia_semana"], dia_semana)
+        and aula["hora_fim"] <= hora_atual
+    ]
+
 # ==========================================
 # REGRAS E IDENTIFICAÇÃO
 # ==========================================
@@ -405,6 +425,41 @@ def listar_substituicoes_do_dia(pergunta):
         f"- **{item['periodo']} período:** {item['ausente']} → {item['substituto']} | "
         f"{item['turma']} | {item['disciplina']}"
         for item in registros
+    )
+    return relatorio
+
+def processar_aulas_anteriores(pergunta, historico, engine):
+    mensagens_usuario = [
+        mensagem["content"] for mensagem in (historico or [])
+        if mensagem["role"] == "user"
+    ]
+    pergunta_anterior = mensagens_usuario[-2] if len(mensagens_usuario) >= 2 else ""
+    contexto = f"{pergunta_anterior} {pergunta}".strip()
+    professores = buscar_professores(engine)
+    professor = identificar_professor(contexto, professores)
+    if not professor:
+        return "⚠️ Não consegui identificar a professora mencionada na pergunta anterior."
+
+    data_referencia = identificar_data_hora_na_pergunta(contexto)
+    dias_semana = {
+        0: "segunda-feira", 1: "terça-feira", 2: "quarta-feira",
+        3: "quinta-feira", 4: "sexta-feira", 5: "sábado", 6: "domingo"
+    }
+    dia_semana = identificar_dia_semana_na_pergunta(contexto) or dias_semana[data_referencia.weekday()]
+    aulas = buscar_aulas_anteriores_do_professor(
+        engine, professor["id_professor"], dia_semana, data_referencia.time()
+    )
+    if not aulas:
+        return f"ℹ️ Não encontrei aulas anteriores para **{professor['nome_professor']}** neste dia."
+
+    relatorio = (
+        f"**Aulas anteriores de {professor['nome_professor']} em "
+        f"{dia_semana.title()}:**\n\n"
+    )
+    relatorio += "\n".join(
+        f"- **{aula['periodo_aula']} período** ({aula['hora_inicio'].strftime('%H:%M')} às "
+        f"{aula['hora_fim'].strftime('%H:%M')}): {aula['nome_disciplina']} | {aula['nome_turma']}"
+        for aula in aulas
     )
     return relatorio
 
@@ -560,6 +615,9 @@ def chamar_ia_generativa(pergunta_usuario_mascarada, contexto_banco_mascarado, h
 
 def get_response(pergunta, engine, historico=None):
     texto_norm = normalizar_texto(pergunta)
+
+    if any(k in texto_norm for k in ["aulas anteriores", "aula anterior", "antes"]):
+        return processar_aulas_anteriores(pergunta, historico, engine)
 
     if any(k in texto_norm for k in ["substituicoes do dia", "substituicoes de hoje", "remanejamentos do dia"]):
         return listar_substituicoes_do_dia(pergunta)
