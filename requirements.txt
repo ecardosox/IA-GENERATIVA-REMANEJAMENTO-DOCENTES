@@ -8,3 +8,4 @@ sqlalchemy
 pandas
 numpy
 requests
+psycopg[binary]
